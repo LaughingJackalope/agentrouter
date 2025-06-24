@@ -72,11 +72,12 @@ async def health_check() -> Dict[str, str]:
     return {"status": "healthy"}
 
 # Import and include routers
-from .routers import messages, agent_inboxes, health
+from .routers import messages, health, agent_health, agent_management
 
 app.include_router(messages.router, prefix="/v1/messages", tags=["messages"])
-app.include_router(agent_inboxes.router, prefix="/v1/agent-inboxes", tags=["agent-inboxes"])
+app.include_router(agent_management.router, tags=["agent-management"])
 app.include_router(health.router, prefix="/health", tags=["health"])
+app.include_router(agent_health.router, prefix="/v1", tags=["agent-health"])
 
 # Root endpoint
 @app.get("/")

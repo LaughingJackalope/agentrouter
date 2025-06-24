@@ -1,15 +1,20 @@
 # services/router/message_router_service.py
 
+import asyncio
 import json
 import uuid
 import base64
 import time
+import os
 from datetime import datetime, timezone
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import json_log_formatter
 from dataclasses import dataclass, asdict
 from functools import wraps
+
+# Import the new CAMS client
+from .cams_client import CAMSClient
 
 # --- Metrics Configuration ---
 # This is a simplified metrics collector. In production, you'd use OpenTelemetry or Prometheus client
@@ -92,72 +97,96 @@ def log_context(**context):
 
 # Decorator for request timing and error handling
 def timed_operation(operation_name: str, **labels):
-    """Decorator to time operations and log metrics"""
+    """Decorator to time operations and log metrics.
+    
+    This decorator works with both synchronous and asynchronous functions.
+    """
     def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            start_time = time.time()
-            status = 'success'
-            
-            try:
-                result = func(*args, **kwargs)
-                return result
-            except Exception as e:
-                status = 'error'
-                logger.error(f"{operation_name} failed", exc_info=True, 
-                           extra={'error': str(e), 'error_type': e.__class__.__name__})
-                raise
-            finally:
-                duration = time.time() - start_time
-                metrics.record_latency(
-                    f"{operation_name}_duration_seconds", 
-                    duration,
-                    {**labels, 'status': status}
-                )
-                metrics.increment_counter(
-                    f"{operation_name}_total",
-                    {**labels, 'status': status}
-                )
-                logger.info(
-                    f"{operation_name} completed",
-                    extra={
-                        'operation': operation_name,
-                        'duration_seconds': duration,
-                        'status': status
-                    }
-                )
-        return wrapper
+        if asyncio.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                start_time = time.time()
+                status = 'success'
+                
+                try:
+                    result = await func(*args, **kwargs)
+                    return result
+                except Exception as e:
+                    status = 'error'
+                    logger.error(f"{operation_name} failed", exc_info=True, 
+                               extra={'error': str(e), 'error_type': e.__class__.__name__})
+                    raise
+                finally:
+                    duration = time.time() - start_time
+                    metrics.record_latency(
+                        f"{operation_name}_duration_seconds", 
+                        duration,
+                        {**labels, 'status': status}
+                    )
+                    
+                    logger.info(
+                        f"{operation_name} completed",
+                        extra={
+                            'operation': operation_name,
+                            'duration_seconds': duration,
+                            'status': status,
+                            **labels
+                        }
+                    )
+            return async_wrapper
+        else:
+            @wraps(func)
+            def sync_wrapper(*args, **kwargs):
+                start_time = time.time()
+                status = 'success'
+                
+                try:
+                    result = func(*args, **kwargs)
+                    return result
+                except Exception as e:
+                    status = 'error'
+                    logger.error(f"{operation_name} failed", exc_info=True, 
+                               extra={'error': str(e), 'error_type': e.__class__.__name__})
+                    raise
+                finally:
+                    duration = time.time() - start_time
+                    metrics.record_latency(
+                        f"{operation_name}_duration_seconds", 
+                        duration,
+                        {**labels, 'status': status}
+                    )
+                    
+                    logger.info(
+                        f"{operation_name} completed",
+                        extra={
+                            'operation': operation_name,
+                            'duration_seconds': duration,
+                            'status': status,
+                            **labels
+                        }
+                    )
+            return sync_wrapper
     return decorator
 
-# Attempt to import CAMS client from the specified path
-try:
-    from services.cams.cams_api_pseudo import getAgentMapping
-except ImportError:
-    print("WARN: CAMS API pseudo-code not found at services.cams.cams_api_pseudo. Using mock CAMS client.")
-    # Define a mock getAgentMapping if the import fails (e.g., during isolated testing or if path is wrong)
-    def getAgentMapping(ai_agent_address: str):
-        print(f"MOCK CAMS: getAgentMapping called for {ai_agent_address}")
-        if ai_agent_address == "active-agent@example.com":
-            return {
-                "aiAgentAddress": ai_agent_address,
-                "inboxDestinationType": "GCP_PUBSUB_TOPIC",
-                "inboxName": "projects/your-gcp-project/topics/active-agent-inbox",
-                "status": "ACTIVE",
-                "lastHealthCheckTimestamp": None,
-                "registrationTimestamp": datetime.now(timezone.utc).isoformat(),
-                "lastUpdatedTimestamp": datetime.now(timezone.utc).isoformat(),
-                "updatedBy": "system",
-                "description": "Mock active agent",
-                "ownerTeam": "Mock Team"
-            }
-        elif ai_agent_address == "inactive-agent@example.com":
-            return {
-                "aiAgentAddress": ai_agent_address,
-                "inboxDestinationType": "GCP_PUBSUB_TOPIC",
-                "inboxName": "projects/your-gcp-project/topics/inactive-agent-inbox",
-                "status": "INACTIVE",
-                # ... other fields
-            }
+# Initialize CAMS client
+cams_client = CAMSClient()
+
+# For backward compatibility
+def getAgentMapping(ai_agent_address: str):
+    """Legacy function to maintain compatibility with existing code.
+    
+    This is a temporary wrapper around the new CAMS client's get_agent_mapping method.
+    It should be replaced with direct calls to cams_client.get_agent_mapping in the future.
+    """
+    import asyncio
+    
+    async def _get_mapping():
+        return await cams_client.get_agent_mapping(ai_agent_address)
+        
+    try:
+        return asyncio.run(_get_mapping())
+    except Exception as e:
+        logger.error(f"Error in getAgentMapping: {e}")
         return None
 
 # Logging is now configured above with JSON formatter
@@ -170,17 +199,28 @@ def create_json_response(data, status_code):
     """
     return {"statusCode": status_code, "body": data}
 
-# --- CAMS Client Stub ---
-class CAMSClient:
+# --- CAMS Client Wrapper ---
+class CAMSClientWrapper:
+    """Wrapper around CAMS client to add logging and metrics."""
+    
+    def __init__(self, cams_client: CAMSClient):
+        self.cams_client = cams_client
+    
     @timed_operation("cams_lookup", operation="get_agent_mapping")
-    def get_agent_mapping(self, ai_agent_address: str):
+    async def get_agent_mapping(self, ai_agent_address: str) -> Optional[Dict[str, Any]]:
         """
-        Wrapper for the CAMS getAgentMapping function.
+        Get agent mapping from CAMS.
+        
+        Args:
+            ai_agent_address: The address of the AI agent
+            
+        Returns:
+            Optional[Dict[str, Any]]: The agent mapping if found, None otherwise
         """
         with log_context(ai_agent_address=ai_agent_address):
             logger.info("Looking up agent mapping")
             try:
-                result = getAgentMapping(ai_agent_address)
+                result = await self.cams_client.get_agent_mapping(ai_agent_address)
                 if result:
                     logger.debug("Agent mapping found", extra={
                         'status': result.get('status', 'UNKNOWN'),
@@ -195,8 +235,106 @@ class CAMSClient:
                     'error_type': e.__class__.__name__
                 })
                 raise
+    
+    @timed_operation("cams_register", operation="register_agent_mapping")
+    async def register_agent_mapping(
+        self,
+        ai_agent_address: str,
+        inbox_destination_type: str,
+        inbox_name: str,
+        description: str = None,
+        owner_team: str = None,
+        updated_by: str = "router_service"
+    ) -> Dict[str, Any]:
+        """
+        Register a new agent mapping in CAMS.
+        
+        Args:
+            ai_agent_address: The address of the AI agent
+            inbox_destination_type: Type of the inbox destination (e.g., GCP_PUBSUB_TOPIC)
+            inbox_name: Name of the inbox
+            description: Optional description of the agent
+            owner_team: Optional owner team
+            updated_by: Identifier of who is making the update
+            
+        Returns:
+            Dict[str, Any]: The registered agent mapping
+        """
+        with log_context(ai_agent_address=ai_agent_address):
+            logger.info("Registering agent mapping")
+            try:
+                return await self.cams_client.register_agent_mapping(
+                    ai_agent_address=ai_agent_address,
+                    inbox_destination_type=inbox_destination_type,
+                    inbox_name=inbox_name,
+                    description=description,
+                    owner_team=owner_team,
+                    updated_by=updated_by
+                )
+            except Exception as e:
+                logger.error("Failed to register agent mapping", extra={
+                    'error': str(e),
+                    'error_type': e.__class__.__name__
+                })
+                raise
+    
+    @timed_operation("cams_update", operation="update_agent_mapping")
+    async def update_agent_mapping(
+        self,
+        ai_agent_address: str,
+        updated_by: str = "router_service",
+        **kwargs
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Update an agent mapping in CAMS.
+        
+        Args:
+            ai_agent_address: The address of the AI agent
+            updated_by: Identifier of who is making the update
+            **kwargs: Fields to update
+            
+        Returns:
+            Optional[Dict[str, Any]]: The updated agent mapping if successful, None otherwise
+        """
+        with log_context(ai_agent_address=ai_agent_address, updated_fields=list(kwargs.keys())):
+            logger.info("Updating agent mapping")
+            try:
+                return await self.cams_client.update_agent_mapping_details(
+                    ai_agent_address=ai_agent_address,
+                    updated_by=updated_by,
+                    **kwargs
+                )
+            except Exception as e:
+                logger.error("Failed to update agent mapping", extra={
+                    'error': str(e),
+                    'error_type': e.__class__.__name__
+                })
+                raise
+    
+    @timed_operation("cams_delete", operation="delete_agent_mapping")
+    async def delete_agent_mapping(self, ai_agent_address: str) -> bool:
+        """
+        Delete an agent mapping from CAMS.
+        
+        Args:
+            ai_agent_address: The address of the AI agent
+            
+        Returns:
+            bool: True if the agent was deleted, False otherwise
+        """
+        with log_context(ai_agent_address=ai_agent_address):
+            logger.info("Deleting agent mapping")
+            try:
+                return await self.cams_client.delete_agent_mapping(ai_agent_address)
+            except Exception as e:
+                logger.error("Failed to delete agent mapping", extra={
+                    'error': str(e),
+                    'error_type': e.__class__.__name__
+                })
+                raise
 
-cams_client = CAMSClient()
+# Initialize the CAMS client wrapper
+cams_client = CAMSClientWrapper(cams_client)
 
 # --- Pub/Sub Publisher Stub ---
 class PubSubPublisher:

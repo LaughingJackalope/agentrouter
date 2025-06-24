@@ -117,7 +117,7 @@ The API handlers are implemented in `agent_management_api.py` and interact with 
     *   `404 Not Found`: If `aiAgentAddress` does not exist.
     *   `500 Internal Server Error`: For unexpected errors during deletion.
 
-## Agent Health Check API (/v1/agent-health-check)
+## Agent Health Check API (/v1/agent-health)
 
 The Agent Health Check API allows AI Agents to report their health status, which is used to update their status in the Central Agent Mapping Service (CAMS).
 
@@ -128,9 +128,13 @@ The Agent Health Check API allows AI Agents to report their health status, which
 *   **Request Payload (JSON):**
     ```json
     {
-      "aiAgentAddress": "string",  // REQUIRED. The address of the reporting agent.
-      "status": "string",         // REQUIRED. Must be either "HEALTHY" or "UNHEALTHY"
-      "details": "string"          // OPTIONAL. Additional details about the health status.
+      "ai_agent_address": "string",  // REQUIRED. The address of the reporting agent.
+      "status": "string",            // REQUIRED. Must be either "HEALTHY" or "UNHEALTHY"
+      "details": {                   // OPTIONAL. Additional details about the health status.
+        "component": "string",      // Example component name
+        "metrics": {}                // Any relevant metrics
+      },
+      "timestamp": "string"         // OPTIONAL. ISO 8601 timestamp of the health check
     }
     ```
 *   **Successful Response:**
@@ -138,13 +142,22 @@ The Agent Health Check API allows AI Agents to report their health status, which
     *   **Response Body (JSON):**
         ```json
         {
-          "message": "Health status updated successfully"
+          "status": "success",
+          "message": "Health status recorded for agent agent@example.com",
+          "timestamp": "2025-06-24T12:00:00.000000+00:00"
         }
         ```
 *   **Error Handling:**
     *   `400 Bad Request`: For invalid input (missing required fields, invalid status value, etc.)
     *   `404 Not Found`: If the specified agent address is not registered in CAMS.
     *   `500 Internal Server Error`: For unexpected errors during processing.
+
+### Behavior
+
+- When an agent reports as `UNHEALTHY`, it will automatically be marked as `INACTIVE` in CAMS.
+- The `last_health_check_timestamp` in CAMS is updated with each health check.
+- The health check endpoint is rate-limited and authenticated in production environments.
+- All health check events are logged and can be monitored through the system's observability stack.
 
 ## Interaction with CAMS Client
 

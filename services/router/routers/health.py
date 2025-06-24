@@ -3,6 +3,7 @@ Health check endpoints for the message router service.
 """
 import logging
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from typing import Dict, Any
 import psutil
 import os
