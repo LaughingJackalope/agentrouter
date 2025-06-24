@@ -1,0 +1,43 @@
+steps:
+# Step 1: Build the Docker image
+- name: 'gcr.io/cloud-builders/docker'
+  args:
+    - 'build'
+    - '-t'
+    - '$_GAR_REGION-docker.pkg.dev/$PROJECT_ID/agentrouter-images/agentrouter:$COMMIT_SHA'
+    - '-t'
+    - '$_GAR_REGION-docker.pkg.dev/$PROJECT_ID/agentrouter-images/agentrouter:latest'
+    - 'services/router'  # Build context is the router service directory
+  id: 'Build Docker Image'
+
+# Step 2: Run Tests
+- name: 'python:3.9-slim'
+  entrypoint: 'bash'
+  args:
+    - '-c'
+    - 'cd services/router && pip install -r requirements.txt && python -m pytest'
+  id: 'Run Tests'
+
+# Step 3: Push the Docker image to Google Artifact Registry
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', '$_GAR_REGION-docker.pkg.dev/$PROJECT_ID/agentrouter-images/agentrouter:$COMMIT_SHA']
+  id: 'Push Docker Image to GAR'
+  waitFor: ['Run Tests']
+
+# Push the 'latest' tag
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', '$_GAR_REGION-docker.pkg.dev/$PROJECT_ID/agentrouter-images/agentrouter:latest']
+  waitFor: ['Push Docker Image to GAR']
+
+# Define the final images that will be pushed and become artifacts
+images:
+- '$_GAR_REGION-docker.pkg.dev/$PROJECT_ID/agentrouter-images/agentrouter:$COMMIT_SHA'
+- '$_GAR_REGION-docker.pkg.dev/$PROJECT_ID/agentrouter-images/agentrouter:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'
+
+# Substitutions
+substitutions:
+  _GAR_REGION: 'us-central1'  # Default value, can be overridden in trigger
