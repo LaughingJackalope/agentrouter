@@ -61,6 +61,18 @@ The pseudo-code assumes a `DBClient` class with methods like:
     *   **Output:** Boolean indicating success.
     *   **Notes:** Updates `lastUpdatedTimestamp` (via DB trigger) and `updatedBy`.
 
+*   **`updateAgentMappingDetails(aiAgentAddress: str, updatedBy: str = None, **kwargs)`**
+    *   **Purpose:** Updates one or more fields of an existing agent mapping. Supports partial updates.
+    *   **Inputs:**
+        *   `aiAgentAddress` (string, mandatory): The identifier of the agent mapping to update.
+        *   `updatedBy` (string, optional): Identifier for the entity performing the update.
+        *   `**kwargs`: Keyword arguments where keys are the field names to update (e.g., `description="New description"`, `status="INACTIVE"`).
+            *   Allowed fields for update: `inboxDestinationType`, `inboxName`, `status`, `description`, `ownerTeam`.
+    *   **Output:** A dictionary of the updated agent mapping record if successful, or `None` if the agent is not found or the update fails. Raises `ValueError` for invalid inputs (e.g. bad status value).
+    *   **Notes:**
+        *   Updates `lastUpdatedTimestamp` (conceptually via DB trigger or ORM) and `updatedBy`.
+        *   If `status` is provided in `kwargs`, it must be one of 'ACTIVE' or 'INACTIVE'.
+
 *   **`deleteAgentMapping(aiAgentAddress: str)`**
     *   **Purpose:** Removes an agent mapping.
     *   **Inputs:** `aiAgentAddress` (string).
