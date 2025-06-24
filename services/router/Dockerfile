@@ -2,7 +2,7 @@
 FROM python:3.11-slim-bookworm
 
 # Set environment variables
-ENV PYTHONDONDONTWRITEBYTECODE=1 \
+ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONFAULTHANDLER=1 \
     PIP_NO_CACHE_DIR=off \
@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     python3-dev \
     curl \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app user
