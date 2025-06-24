@@ -205,6 +205,89 @@ def deleteAgentMapping(aiAgentAddress: str):
         print(f"Error deleting agent mapping: {e}")
         raise
 
+def updateAgentMappingDetails(aiAgentAddress: str, updatedBy: str = None, **kwargs):
+    """
+    Updates arbitrary fields for a given agent mapping.
+    Handles partial updates: only fields present in kwargs are modified.
+    Also updates lastUpdatedTimestamp (conceptually handled by DB trigger or ORM) and updatedBy.
+    Allowed kwargs keys: "inboxDestinationType", "inboxName", "status", "description", "ownerTeam".
+    """
+    if not aiAgentAddress:
+        raise ValueError("aiAgentAddress is required for update.")
+    if not kwargs:
+        raise ValueError("No fields provided to update.")
+
+    # Validate status if provided
+    if "status" in kwargs and kwargs["status"] not in ('ACTIVE', 'INACTIVE'):
+        raise ValueError("Invalid status value. Must be 'ACTIVE' or 'INACTIVE'.")
+
+    # Conceptual: Check if agent exists first
+    # In a real DB, an UPDATE query on a non-existent PK might just affect 0 rows.
+    # Here, we can use getAgentMapping for a clearer pseudo-code flow.
+    existing_mapping = getAgentMapping(aiAgentAddress)
+    if not existing_mapping:
+        print(f"Agent {aiAgentAddress} not found. Cannot update details.")
+        return None # Or raise a specific "NotFound" error
+
+    # Construct the SET part of the SQL query conceptually
+    set_clauses = []
+    params = []
+
+    allowed_fields = ["inboxDestinationType", "inboxName", "status", "description", "ownerTeam"]
+
+    for key, value in kwargs.items():
+        if key in allowed_fields:
+            set_clauses.append(f"{key} = %s")
+            params.append(value)
+        else:
+            print(f"Warning: Field '{key}' is not allowed for update and will be ignored.")
+
+    if not set_clauses:
+        # This could happen if only disallowed fields were passed in kwargs
+        raise ValueError("No valid fields provided for update after filtering.")
+
+    # Add updatedBy to params and query
+    set_clauses.append("updatedBy = %s")
+    params.append(updatedBy)
+
+    # Conceptually, lastUpdatedTimestamp is also set by the DB
+    # set_clauses.append("lastUpdatedTimestamp = CURRENT_TIMESTAMP") # Or similar, handled by DB
+
+    params.append(aiAgentAddress) # For the WHERE clause
+
+    query = f"""
+        UPDATE agent_inboxes
+        SET {', '.join(set_clauses)}
+        WHERE aiAgentAddress = %s;
+    """
+
+    try:
+        success = db_client.execute_query(query, tuple(params))
+        if success: # In a real scenario, this would check affected_rows > 0
+            print(f"Details updated for agent {aiAgentAddress} with fields: {kwargs}")
+            # For pseudo-code, fetch and return the updated record
+            # In a real implementation, the DB might return the updated row, or we'd re-fetch.
+            updated_record = getAgentMapping(aiAgentAddress) # Re-fetch to get all fields including timestamps
+
+            # Simulate the timestamp update for the returned object if getAgentMapping mock isn't perfect
+            if updated_record:
+                 # The mock for getAgentMapping might not be sophisticated enough to reflect partial updates immediately
+                 # So, we manually merge the changes into what it might return for this pseudo call
+                for key, value in kwargs.items():
+                    if key in allowed_fields:
+                        updated_record[key] = value
+                updated_record["lastUpdatedTimestamp"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                updated_record["updatedBy"] = updatedBy
+                return updated_record
+            return None # Should not happen if update was successful and agent existed
+        else:
+            # This could mean agent not found by the UPDATE query itself, or no actual change made
+            print(f"Agent {aiAgentAddress} not found or details not updated.")
+            return None
+    except Exception as e:
+        print(f"Error updating agent details for {aiAgentAddress}: {e}")
+        raise
+
 # --- Example Usage (Conceptual) ---
 if __name__ == "__main__":
     print("CAMS API Pseudo-code demonstrations:")
@@ -284,6 +367,51 @@ if __name__ == "__main__":
     print("\n--- Attempting Update Agent Inbox ---")
     if updateAgentInbox("agent123@example.com", "GCP_PUBSUB_TOPIC_NEW", "projects/new-project/topics/new-inbox", updatedBy="DevTeam"):
         print("Inbox update call succeeded (pseudo).")
+
+    # Update Agent Mapping Details (New Generic Function)
+    print("\n--- Attempting Update Agent Mapping Details (Generic) ---")
+    # First, ensure the agent exists for the update context
+    db_client.execute_query_fetchone = lambda q, p: {
+        "aiAgentAddress": p[0], "inboxDestinationType": "GCP_PUBSUB_TOPIC",
+        "inboxName": "projects/your-gcp-project/topics/agent123-inbox", "status": "ACTIVE",
+        "description": "Original Description", "ownerTeam": "Alpha Team",
+        "registrationTimestamp": datetime.datetime.now(datetime.timezone.utc),
+        "lastUpdatedTimestamp": datetime.datetime.now(datetime.timezone.utc)
+    } if p[0] == "agent123@example.com" else None
+
+    updated_details = updateAgentMappingDetails(
+        aiAgentAddress="agent123@example.com",
+        updatedBy="ConfigMgmt",
+        description="Updated description via generic method",
+        ownerTeam="Bravo Team",
+        status="INACTIVE"
+    )
+    if updated_details:
+        print(f"Generic update call succeeded. Details: {updated_details}")
+        # Verify the conceptual lastUpdatedTimestamp would have changed
+        # In a real system, we'd fetch again or check returned data.
+        # Here, the returned dict includes a new timestamp.
+
+    # Test generic update for a non-existent agent
+    print("\n--- Attempting Update Agent Mapping Details for Non-existent Agent ---")
+    non_existent_updated = updateAgentMappingDetails(
+        aiAgentAddress="nonexistent-for-update@example.com",
+        description="This should not apply"
+    )
+    if not non_existent_updated:
+        print("Correctly failed to update non-existent agent with generic method.")
+
+    # Restore mock_get for subsequent tests if any rely on specific behavior
+    def mock_get_restore(query, params):
+        if params[0] == "agent123@example.com": # This agent might have been "deleted" in conceptual tests below
+            return {
+                "aiAgentAddress": params[0], "inboxDestinationType": "GCP_PUBSUB_TOPIC_NEW", # from previous update
+                "inboxName": "projects/new-project/topics/new-inbox", "status": "INACTIVE", # from generic update
+                "description": "Updated description via generic method", "ownerTeam": "Bravo Team",
+            }
+        return None
+    db_client.execute_query_fetchone = mock_get_restore
+
 
     # Delete Agent Mapping
     print("\n--- Attempting Delete Agent Mapping ---")
