@@ -2,6 +2,77 @@
 # Pseudo-code for Central Agent Mapping Service (CAMS) Core API Operations
 
 import datetime
+import logging
+import time
+from typing import Dict, Any, Optional, Tuple, List
+from dataclasses import dataclass
+from functools import wraps
+
+# Reuse the MetricsCollector from message_router_service
+from services.router.message_router_service import MetricsCollector
+
+# Initialize metrics
+metrics = MetricsCollector()
+
+# Configure logging
+logger = logging.getLogger('cams')
+logger.setLevel(logging.INFO)
+
+# Context manager for database operations
+def db_operation(operation: str):
+    """Decorator to time database operations and log metrics"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            start_time = time.time()
+            status = 'success'
+            
+            # Extract aiAgentAddress from args if available
+            ai_agent_address = None
+            if args and len(args) > 1 and isinstance(args[1], str):
+                ai_agent_address = args[1]
+            
+            log_context = {
+                'operation': operation,
+                'ai_agent_address': ai_agent_address or 'unknown'
+            }
+            
+            logger.info(f"Starting {operation}", extra=log_context)
+            
+            try:
+                result = func(*args, **kwargs)
+                log_context['success'] = True
+                return result
+            except Exception as e:
+                status = 'error'
+                log_context.update({
+                    'success': False,
+                    'error': str(e),
+                    'error_type': e.__class__.__name__
+                })
+                logger.error(f"{operation} failed", exc_info=True, extra=log_context)
+                raise
+            finally:
+                duration = time.time() - start_time
+                metrics.record_latency(
+                    f"cams_db_operation_duration_seconds",
+                    duration,
+                    {'operation': operation, 'status': status}
+                )
+                metrics.increment_counter(
+                    f"cams_db_operations_total",
+                    {'operation': operation, 'status': status}
+                )
+                logger.info(
+                    f"{operation} completed",
+                    extra={
+                        **log_context,
+                        'duration_seconds': duration,
+                        'status': status
+                    }
+                )
+        return wrapper
+    return decorator
 
 # Conceptual Database Client
 # This is a placeholder for whatever database interaction library/ORM will be used.
@@ -9,49 +80,88 @@ import datetime
 # to prevent SQL injection if raw SQL is being constructed.
 
 class DBClient:
+    @db_operation("execute_query")
     def execute_query(self, query, params=None):
         """
         Executes a query that modifies data (INSERT, UPDATE, DELETE)
         or a query that might return multiple rows (though not used for that here).
         Returns True for success/row affected, False otherwise, or raises an exception.
         """
-        print(f"Executing Query: {query} with Params: {params}")
-        # In a real implementation, this would interact with the database.
-        # For pseudo-code, we'll assume success if params seem valid for the operation.
-        if "INSERT" in query and params and len(params) >= 3: # Basic check for register
-            return True
-        if "UPDATE" in query and params and len(params) >= 2: # Basic check for update
-            return True
-        if "DELETE" in query and params and len(params) >=1: # Basic check for delete
-            return True
-        return False
+        logger.debug("Executing database query", extra={
+            'query': query,
+            'params': str(params)[:500]  # Truncate long parameters
+        })
+        
+        try:
+            # In a real implementation, this would interact with the database.
+            # For pseudo-code, we'll assume success if params seem valid for the operation.
+            if "INSERT" in query and params and len(params) >= 3:  # Basic check for register
+                metrics.increment_counter("cams_db_insert_total", {"table": "agent_mappings"})
+                return True
+            if "UPDATE" in query and params and len(params) >= 2:  # Basic check for update
+                metrics.increment_counter("cams_db_update_total", {"table": "agent_mappings"})
+                return True
+            if "DELETE" in query and params and len(params) >= 1:  # Basic check for delete
+                metrics.increment_counter("cams_db_delete_total", {"table": "agent_mappings"})
+                return True
+                
+            logger.warning("Query validation failed", extra={
+                'query': query,
+                'params_count': len(params) if params else 0
+            })
+            return False
+            
+        except Exception as e:
+            logger.error("Database query failed", extra={
+                'query': query,
+                'error': str(e),
+                'error_type': e.__class__.__name__
+            })
+            metrics.increment_counter("cams_db_errors_total", {
+                'operation': 'execute_query',
+                'error_type': e.__class__.__name__
+            })
+            raise
 
+    @db_operation("execute_query_fetchone")
     def execute_query_fetchone(self, query, params=None):
         """
         Executes a query expected to return a single row (e.g., SELECT by primary key).
         Returns a dictionary representing the row, or None if not found.
         """
-        print(f"Executing Query (fetchone): {query} with Params: {params}")
-        # In a real implementation, this would interact with the database.
-        # For pseudo-code, this is highly conceptual.
-        if "SELECT" in query and "aiAgentAddress" in query and params:
-            # Simulate finding a record for demonstration if it's a getAgentMapping call
-            if params[0] == "agent123@example.com":
-                return {
-                    "aiAgentAddress": params[0],
-                    "inboxDestinationType": "GCP_PUBSUB_TOPIC",
-                    "inboxName": "projects/your-gcp-project/topics/agent123-inbox",
-                    "status": "ACTIVE",
-                    "lastHealthCheckTimestamp": None,
-                    "registrationTimestamp": datetime.datetime.now(datetime.timezone.utc),
-                    "lastUpdatedTimestamp": datetime.datetime.now(datetime.timezone.utc),
-                    "updatedBy": "system",
-                    "description": "Sample agent",
-                    "ownerTeam": "Alpha Team"
+        logger.debug("Executing fetchone query", extra={
+            'query': query,
+            'params': str(params)[:500]  # Truncate long parameters
+        })
+        
+        try:
+            # In a real implementation, this would interact with the database.
+            # For pseudo-code, this is highly conceptual.
+            if "SELECT" in query and "aiAgentAddress" in query and params:
+                metrics.increment_counter("cams_db_select_total", {"table": "agent_mappings"})
+                # Simulate finding a record for demonstration if it's a getAgentMapping call
+                if params[0] == "agent123@example.com":
+                    result = {
+                        "aiAgentAddress": params[0],
+                        "inboxDestinationType": "GCP_PUBSUB_TOPIC",
+                        "inboxName": "projects/your-gcp-project/topics/agent123-inbox",
+                        "status": "ACTIVE",
+                        "lastHealthCheckTimestamp": None,
+                        "registrationTimestamp": datetime.datetime.now(datetime.timezone.utc),
+                        "lastUpdatedTimestamp": datetime.datetime.now(datetime.timezone.utc),
+                        "updatedBy": "system",
+                        "description": "Sample agent",
+                        "ownerTeam": "Alpha Team"
                 }
         return None
 
-db_client = DBClient() # Instantiate the conceptual client
+# Initialize database client with error handling
+try:
+    db_client = DBClient()
+    logger.info("Database client initialized successfully")
+except Exception as e:
+    logger.critical("Failed to initialize database client", exc_info=True)
+    raise
 
 # --- CAMS API Operations ---
 
@@ -61,30 +171,87 @@ def registerAgentMapping(aiAgentAddress: str, inboxDestinationType: str, inboxNa
     Creates a new agent mapping record. Status defaults to ACTIVE.
     lastUpdatedTimestamp and registrationTimestamp are handled by the database.
     """
-    if not all([aiAgentAddress, inboxDestinationType, inboxName]):
-        raise ValueError("aiAgentAddress, inboxDestinationType, and inboxName are required.")
-
-    # Check for duplicates first (conceptual - real DB would have unique constraint)
-    if getAgentMapping(aiAgentAddress):
-        raise ValueError(f"Error: Agent with address '{aiAgentAddress}' already exists.")
-
-    query = """
-        INSERT INTO agent_inboxes (
-            aiAgentAddress, inboxDestinationType, inboxName,
-            description, ownerTeam, updatedBy, status
-            -- registrationTimestamp and lastUpdatedTimestamp have defaults
-            -- status defaults to ACTIVE
-        ) VALUES (%s, %s, %s, %s, %s, %s, 'ACTIVE');
-    """
-    params = (aiAgentAddress, inboxDestinationType, inboxName, description, ownerTeam, updatedBy)
-
+    operation = "register_agent_mapping"
+    logger.info(f"Starting {operation}", extra={
+        'ai_agent_address': aiAgentAddress,
+        'inbox_destination_type': inboxDestinationType,
+        'operation': operation
+    })
+    
+    start_time = time.time()
+    status = 'success'
+    
     try:
-        success = db_client.execute_query(query, params)
-        if success:
-            print(f"Agent mapping registered for {aiAgentAddress}")
-            # Return the data that would have been created (or query it back)
-            # For pseudo-code, we can construct it based on input.
-            return {
+        # Input validation
+        if not all([aiAgentAddress, inboxDestinationType, inboxName]):
+            error_msg = "Missing required fields"
+            logger.error(error_msg, extra={
+                'ai_agent_address': aiAgentAddress,
+                'missing_fields': [
+                    field for field, value in [
+                        ('aiAgentAddress', aiAgentAddress),
+                        ('inboxDestinationType', inboxDestinationType),
+                        ('inboxName', inboxName)
+                    ] if not value
+                ]
+            })
+            metrics.increment_counter("cams_validation_errors_total", {
+                'operation': operation,
+                'error_type': 'missing_required_fields'
+            })
+            raise ValueError(error_msg)
+        
+        # Check if agent already exists
+        existing_agent = getAgentMapping(aiAgentAddress)
+        if existing_agent:
+            error_msg = f"Agent with address '{aiAgentAddress}' already exists"
+            logger.warning(error_msg, extra={'ai_agent_address': aiAgentAddress})
+            metrics.increment_counter("cams_validation_errors_total", {
+                'operation': operation,
+                'error_type': 'agent_already_exists'
+            })
+            raise ValueError(f"Error: {error_msg}.")
+
+        # Construct the INSERT query
+        query = """
+        INSERT INTO agent_mappings 
+        (aiAgentAddress, inboxDestinationType, inboxName, status, description, ownerTeam, updatedBy)
+        VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?)
+        """
+        
+        logger.debug("Executing agent registration query", extra={
+            'ai_agent_address': aiAgentAddress,
+            'inbox_destination_type': inboxDestinationType
+        })
+        
+        # Execute the query
+        success = db_client.execute_query(
+            query,
+            (aiAgentAddress, inboxDestinationType, inboxName, 
+             description, ownerTeam, updatedBy or "system")
+        )
+        
+        if not success:
+            error_msg = "Failed to register agent in database"
+            logger.error(error_msg, extra={'ai_agent_address': aiAgentAddress})
+            metrics.increment_counter("cams_operation_errors_total", {
+                'operation': operation,
+                'error_type': 'database_error'
+            })
+            raise RuntimeError(error_msg)
+            
+        logger.info("Agent registered successfully", extra={
+            'ai_agent_address': aiAgentAddress,
+            'inbox_destination_type': inboxDestinationType
+        })
+        metrics.increment_counter("cams_operations_total", {
+            'operation': 'register_agent',
+            'status': 'success'
+        })
+        
+        # Return the newly created agent mapping
+        return getAgentMapping(aiAgentAddress)
+        
                 "aiAgentAddress": aiAgentAddress,
                 "inboxDestinationType": inboxDestinationType,
                 "inboxName": inboxName,
@@ -107,159 +274,267 @@ def getAgentMapping(aiAgentAddress: str):
     Retrieves a single agent mapping record by its aiAgentAddress.
     Returns the full agent mapping record (dictionary/object) or None if not found.
     """
-    if not aiAgentAddress:
-        raise ValueError("aiAgentAddress is required.")
+    operation = "get_agent_mapping"
+    logger.info(f"Starting {operation}", extra={
+        'ai_agent_address': aiAgentAddress,
+        'operation': operation
+    })
+    
+    start_time = time.time()
+    status = 'success'
+    
+    try:
+        # Input validation
+        if not aiAgentAddress:
+            error_msg = "aiAgentAddress is required"
+            logger.error(error_msg, extra={'operation': operation})
+            metrics.increment_counter("cams_validation_errors_total", {
+                'operation': operation,
+                'error_type': 'missing_required_field'
+            })
+            raise ValueError(f"{error_msg}.")
 
-    query = """
-        SELECT aiAgentAddress, inboxDestinationType, inboxName, status,
-               lastHealthCheckTimestamp, registrationTimestamp, lastUpdatedTimestamp,
-               updatedBy, description, ownerTeam
-        FROM agent_inboxes
-        WHERE aiAgentAddress = %s;
-    """
-    params = (aiAgentAddress,)
-    record = db_client.execute_query_fetchone(query, params)
-
-    if record:
-        print(f"Agent mapping found for {aiAgentAddress}")
-    else:
-        print(f"No agent mapping found for {aiAgentAddress}")
-    return record
+        # This would be a parameterized query in a real implementation
+        query = """
+            SELECT * FROM agent_mappings 
+            WHERE aiAgentAddress = %s
+        """
+        
+        logger.debug("Executing agent lookup query", extra={
+            'ai_agent_address': aiAgentAddress
+        })
+        
+        try:
+            row = db_client.execute_query_fetchone(query, (aiAgentAddress,))
+            if row:
+                logger.info("Agent mapping found", extra={
+                    'ai_agent_address': aiAgentAddress,
+                    'status': row.get('status')
+                })
+                metrics.increment_counter("cams_lookups_total", {
+                    'status': 'found',
+                    'agent_status': row.get('status', 'UNKNOWN')
+                })
+                return row
+            else:
+                logger.info("Agent mapping not found", extra={
+                    'ai_agent_address': aiAgentAddress
+                })
+                metrics.increment_counter("cams_lookups_total", {
+                    'status': 'not_found'
+                })
+                return None
+                
+        except Exception as e:
+            error_msg = f"Database error while retrieving agent mapping"
+            logger.error(error_msg, extra={
+                'ai_agent_address': aiAgentAddress,
+                'error': str(e),
+                'error_type': e.__class__.__name__
+            }, exc_info=True)
+            metrics.increment_counter("cams_operation_errors_total", {
+                'operation': operation,
+                'error_type': 'database_error'
+            })
+            raise RuntimeError(f"{error_msg}: {e}")
+            
+    except Exception as e:
+        status = 'error'
+        error_type = e.__class__.__name__
+        logger.error(f"{operation} failed", exc_info=True, extra={
+            'ai_agent_address': aiAgentAddress,
+            'error': str(e),
+            'error_type': error_type
+        })
+        metrics.increment_counter("cams_operations_total", {
+            'operation': operation,
+            'status': 'error',
+            'error_type': error_type
+        })
+        raise
+    finally:
+        duration = time.time() - start_time
+        metrics.record_latency(
+            "cams_operation_duration_seconds",
+            duration,
+            {'operation': operation, 'status': status}
+        )
+        logger.info(f"{operation} completed", extra={
+            'ai_agent_address': aiAgentAddress,
+            'duration_seconds': duration,
+            'status': status
+        })
 
 def updateAgentStatus(aiAgentAddress: str, newStatus: str, updatedBy: str = None):
     """
     Updates only the status field for a given agent.
     Also updates lastUpdatedTimestamp (handled by DB trigger) and updatedBy.
     """
-    if not aiAgentAddress:
-        raise ValueError("aiAgentAddress is required.")
-    if newStatus not in ('ACTIVE', 'INACTIVE'):
-        raise ValueError("newStatus must be 'ACTIVE' or 'INACTIVE'.")
-
-    query = """
-        UPDATE agent_inboxes
-        SET status = %s, updatedBy = %s
-        -- lastUpdatedTimestamp is updated by a DB trigger
-        WHERE aiAgentAddress = %s;
-    """
-    params = (newStatus, updatedBy, aiAgentAddress)
-
+    operation = "update_agent_status"
+    logger.info(f"Starting {operation}", extra={
+        'ai_agent_address': aiAgentAddress,
+        'new_status': newStatus,
+        'operation': operation
+    })
+    
+    start_time = time.time()
+    status = 'success'
+    
     try:
-        success = db_client.execute_query(query, params)
-        if success:
-            print(f"Status updated to {newStatus} for agent {aiAgentAddress}")
-        else:
-            # This part of pseudo-code might not be reached if db_client always returns True on basic check
-            # A real db_client would return affected_rows or similar.
-            print(f"Agent {aiAgentAddress} not found or status not updated.")
-        return success # Or check affected_rows in a real scenario
+        # Input validation
+        if not all([aiAgentAddress, newStatus]):
+            error_msg = "aiAgentAddress and newStatus are required"
+            logger.error(error_msg, extra={
+                'operation': operation,
+                'missing_fields': [
+                    field for field, value in [
+                        ('aiAgentAddress', aiAgentAddress),
+                        ('newStatus', newStatus)
+                    ] if not value
+                ]
+            })
+            metrics.increment_counter("cams_validation_errors_total", {
+                'operation': operation,
+                'error_type': 'missing_required_fields'
+            })
+            raise ValueError(f"{error_msg}.")
+        
+        # Validate status value (conceptual - in real code, use an enum)
+        valid_statuses = ["ACTIVE", "INACTIVE", "SUSPENDED"]
+        if newStatus not in valid_statuses:
+            error_msg = f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+            logger.error(error_msg, extra={
+                'operation': operation,
+                'provided_status': newStatus,
+                'valid_statuses': valid_statuses
+            })
+            metrics.increment_counter("cams_validation_errors_total", {
+                'operation': operation,
+                'error_type': 'invalid_status'
+            })
+            raise ValueError(error_msg)
+
+        # Check if agent exists first
+        existing_agent = getAgentMapping(aiAgentAddress)
+        if not existing_agent:
+            error_msg = f"Agent with address '{aiAgentAddress}' not found"
+            logger.warning(error_msg, extra={'ai_agent_address': aiAgentAddress})
+            metrics.increment_counter("cams_validation_errors_total", {
+                'operation': operation,
+                'error_type': 'agent_not_found'
+            })
+            raise ValueError(f"{error_msg}.")
+
+        # Don't update if status hasn't changed
+        current_status = existing_agent.get('status')
+        if current_status == newStatus:
+            logger.info("Status unchanged, skipping update", extra={
+                'ai_agent_address': aiAgentAddress,
+                'current_status': current_status,
+                'new_status': newStatus
+            })
+            return existing_agent
+
+        # Construct the UPDATE query
+        query = """
+            UPDATE agent_mappings 
+            SET status = %s, 
+                updatedBy = %s,
+                lastUpdatedTimestamp = CURRENT_TIMESTAMP
+            WHERE aiAgentAddress = %s
+        """
+        params = (newStatus, updatedBy or "system", aiAgentAddress)
+        
+        logger.debug("Executing status update query", extra={
+            'ai_agent_address': aiAgentAddress,
+            'new_status': newStatus,
+            'previous_status': current_status
+        })
+        
+        try:
+            success = db_client.execute_query(query, params)
+            if not success:
+                error_msg = f"Failed to update status for agent {aiAgentAddress}"
+                logger.error(error_msg, extra={'ai_agent_address': aiAgentAddress})
+                metrics.increment_counter("cams_operation_errors_total", {
+                    'operation': operation,
+                    'error_type': 'database_error'
+                })
+                raise RuntimeError(error_msg)
+                
+            logger.info("Agent status updated successfully", extra={
+                'ai_agent_address': aiAgentAddress,
+                'previous_status': current_status,
+                'new_status': newStatus
+            })
+            metrics.increment_counter("cams_status_updates_total", {
+                'previous_status': current_status,
+                'new_status': newStatus
+            })
+            
+            # Return the updated record
+            return getAgentMapping(aiAgentAddress)
+            
+        except Exception as e:
+            error_msg = f"Database error while updating agent status"
+            logger.error(error_msg, extra={
+                'ai_agent_address': aiAgentAddress,
+                'error': str(e),
+                'error_type': e.__class__.__name__
+            }, exc_info=True)
+            metrics.increment_counter("cams_operation_errors_total", {
+                'operation': operation,
+                'error_type': 'database_error'
+            })
+            raise RuntimeError(f"{error_msg}: {e}")
+            
     except Exception as e:
-        print(f"Error updating agent status: {e}")
+        status = 'error'
+        error_type = e.__class__.__name__
+        logger.error(f"{operation} failed", exc_info=True, extra={
+            'ai_agent_address': aiAgentAddress,
+            'error': str(e),
+            'error_type': error_type
+        })
+        metrics.increment_counter("cams_operations_total", {
+            'operation': operation,
+            'status': 'error',
+            'error_type': error_type
+        })
         raise
+    finally:
+        duration = time.time() - start_time
+        metrics.record_latency(
+            "cams_operation_duration_seconds",
+            duration,
+            {'operation': operation, 'status': status}
+        )
+        logger.info(f"{operation} completed", extra={
+            'ai_agent_address': aiAgentAddress,
+            'duration_seconds': duration,
+            'status': status
+        })
 
-def updateAgentInbox(aiAgentAddress: str, newInboxDestinationType: str, newInboxName: str, updatedBy: str = None):
-    """
-    Updates the inbox destination details for an agent.
-    Also updates lastUpdatedTimestamp (handled by DB trigger) and updatedBy.
-    """
-    if not all([aiAgentAddress, newInboxDestinationType, newInboxName]):
-        raise ValueError("aiAgentAddress, newInboxDestinationType, and newInboxName are required.")
-
-    query = """
-        UPDATE agent_inboxes
-        SET inboxDestinationType = %s, inboxName = %s, updatedBy = %s
-        -- lastUpdatedTimestamp is updated by a DB trigger
-        WHERE aiAgentAddress = %s;
-    """
-    params = (newInboxDestinationType, newInboxName, updatedBy, aiAgentAddress)
-
-    try:
-        success = db_client.execute_query(query, params)
-        if success:
-            print(f"Inbox updated for agent {aiAgentAddress}")
-        else:
-            print(f"Agent {aiAgentAddress} not found or inbox not updated.")
-        return success # Or check affected_rows
-    except Exception as e:
-        print(f"Error updating agent inbox: {e}")
-        raise
-
-def deleteAgentMapping(aiAgentAddress: str):
-    """
-    Removes an agent mapping record.
-    """
-    if not aiAgentAddress:
-        raise ValueError("aiAgentAddress is required.")
-
-    query = "DELETE FROM agent_inboxes WHERE aiAgentAddress = %s;"
-    params = (aiAgentAddress,)
-
-    try:
-        success = db_client.execute_query(query, params)
-        if success: # In real scenario, check if any row was actually deleted
-            print(f"Agent mapping for {aiAgentAddress} deleted.")
-        else:
-            print(f"Agent {aiAgentAddress} not found or not deleted.")
-        return success # Or check affected_rows
-    except Exception as e:
-        print(f"Error deleting agent mapping: {e}")
-        raise
 
 def updateAgentMappingDetails(aiAgentAddress: str, updatedBy: str = None, **kwargs):
     """
-    Updates arbitrary fields for a given agent mapping.
-    Handles partial updates: only fields present in kwargs are modified.
-    Also updates lastUpdatedTimestamp (conceptually handled by DB trigger or ORM) and updatedBy.
-    Allowed kwargs keys: "inboxDestinationType", "inboxName", "status", "description", "ownerTeam".
+    Update multiple fields of an agent mapping record.
+    
+    Args:
+        aiAgentAddress: The unique identifier of the agent.
+        updatedBy: Identifier of who is making the update.
+        **kwargs: Key-value pairs of fields to update.
+        
+    Returns:
+        The updated agent mapping record, or None if the agent was not found.
+        
+    Note:
+        - Special handling for health check updates to ensure proper timestamp and logging.
     """
-    if not aiAgentAddress:
-        raise ValueError("aiAgentAddress is required for update.")
-    if not kwargs:
-        raise ValueError("No fields provided to update.")
-
-    # Validate status if provided
-    if "status" in kwargs and kwargs["status"] not in ('ACTIVE', 'INACTIVE'):
-        raise ValueError("Invalid status value. Must be 'ACTIVE' or 'INACTIVE'.")
-
-    # Conceptual: Check if agent exists first
-    # In a real DB, an UPDATE query on a non-existent PK might just affect 0 rows.
-    # Here, we can use getAgentMapping for a clearer pseudo-code flow.
-    existing_mapping = getAgentMapping(aiAgentAddress)
-    if not existing_mapping:
-        print(f"Agent {aiAgentAddress} not found. Cannot update details.")
-        return None # Or raise a specific "NotFound" error
-
-    # Construct the SET part of the SQL query conceptually
-    set_clauses = []
-    params = []
-
-    allowed_fields = ["inboxDestinationType", "inboxName", "status", "description", "ownerTeam"]
-
-    for key, value in kwargs.items():
-        if key in allowed_fields:
-            set_clauses.append(f"{key} = %s")
-            params.append(value)
-        else:
-            print(f"Warning: Field '{key}' is not allowed for update and will be ignored.")
-
-    if not set_clauses:
-        # This could happen if only disallowed fields were passed in kwargs
-        raise ValueError("No valid fields provided for update after filtering.")
-
-    # Add updatedBy to params and query
-    set_clauses.append("updatedBy = %s")
-    params.append(updatedBy)
-
-    # Conceptually, lastUpdatedTimestamp is also set by the DB
-    # set_clauses.append("lastUpdatedTimestamp = CURRENT_TIMESTAMP") # Or similar, handled by DB
-
-    params.append(aiAgentAddress) # For the WHERE clause
-
-    query = f"""
-        UPDATE agent_inboxes
-        SET {', '.join(set_clauses)}
-        WHERE aiAgentAddress = %s;
-    """
+    allowed_fields = {
+        'inboxDestinationType', 'inboxName', 'status', 'description', 
+        'ownerTeam', 'lastHealthCheckTimestamp', 'healthCheckDetails'
+    }
 
     try:
         success = db_client.execute_query(query, tuple(params))
@@ -271,13 +546,34 @@ def updateAgentMappingDetails(aiAgentAddress: str, updatedBy: str = None, **kwar
 
             # Simulate the timestamp update for the returned object if getAgentMapping mock isn't perfect
             if updated_record:
-                 # The mock for getAgentMapping might not be sophisticated enough to reflect partial updates immediately
-                 # So, we manually merge the changes into what it might return for this pseudo call
+                # The mock for getAgentMapping might not be sophisticated enough to reflect partial updates immediately
+                # So, we manually merge the changes into what it might return for this pseudo call
                 for key, value in kwargs.items():
                     if key in allowed_fields:
                         updated_record[key] = value
-                updated_record["lastUpdatedTimestamp"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                updated_record["updatedBy"] = updatedBy
+                
+                # Update timestamps
+                current_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                updated_record["lastUpdatedTimestamp"] = current_time
+                
+                # If this is a health check update, ensure the timestamp is set
+                if 'lastHealthCheckTimestamp' not in kwargs and any(field in kwargs for field in ['status', 'healthCheckDetails']):
+                    updated_record["lastHealthCheckTimestamp"] = current_time
+                
+                updated_record["updatedBy"] = updatedBy or 'system'
+                
+                # Log health check updates
+                if 'status' in kwargs or 'healthCheckDetails' in kwargs:
+                    logger.info(
+                        "Agent health status updated",
+                        extra={
+                            'ai_agent_address': aiAgentAddress,
+                            'new_status': kwargs.get('status'),
+                            'details': kwargs.get('healthCheckDetails', ''),
+                            'updated_by': updatedBy or 'system'
+                        }
+                    )
+                
                 return updated_record
             return None # Should not happen if update was successful and agent existed
         else:

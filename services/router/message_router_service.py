@@ -3,8 +3,131 @@
 import json
 import uuid
 import base64
+import time
 from datetime import datetime, timezone
 import logging
+from typing import Dict, Any, Optional
+import json_log_formatter
+from dataclasses import dataclass, asdict
+from functools import wraps
+
+# --- Metrics Configuration ---
+# This is a simplified metrics collector. In production, you'd use OpenTelemetry or Prometheus client
+class MetricsCollector:
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(MetricsCollector, cls).__new__(cls)
+            cls._instance._counters = {}
+            cls._instance._histograms = {}
+        return cls._instance
+    
+    def increment_counter(self, name: str, labels: Optional[Dict[str, str]] = None, value: int = 1):
+        """Increment a counter metric with optional labels"""
+        key = (name, frozenset((labels or {}).items()))
+        self._counters[key] = self._counters.get(key, 0) + value
+        
+    def record_latency(self, name: str, seconds: float, labels: Optional[Dict[str, str]] = None):
+        """Record a latency measurement"""
+        key = (name, frozenset((labels or {}).items()))
+        if key not in self._histograms:
+            self._histograms[key] = []
+        self._histograms[key].append(seconds)
+    
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get current metrics snapshot"""
+        return {
+            'counters': {
+                name: {'labels': dict(labels), 'value': value} 
+                for (name, labels), value in self._counters.items()
+            },
+            'histograms': {
+                name: {'labels': dict(labels), 'values': values}
+                for (name, labels), values in self._histograms.items()
+            }
+        }
+
+# Initialize metrics collector
+metrics = MetricsCollector()
+
+# --- Logging Configuration ---
+class JSONLogFormatter(json_log_formatter.JSONFormatter):
+    def json_record(self, message: str, extra: dict, record: logging.LogRecord) -> dict:
+        extra['message'] = message
+        extra['level'] = record.levelname
+        extra['logger'] = record.name
+        extra['timestamp'] = datetime.now(timezone.utc).isoformat()
+        
+        # Add context if present
+        if hasattr(record, 'context'):
+            extra.update(record.context)
+            
+        return extra
+
+# Configure root logger
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Add JSON formatter to handler
+handler = logging.StreamHandler()
+formatter = JSONLogFormatter()
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
+# Context manager for request context
+def log_context(**context):
+    """Add context to all log messages within the block"""
+    old_context = getattr(logging.getLogRecordFactory(), 'context', {})
+    logging.getLogRecordFactory().context = {**old_context, **context}
+    
+    class ContextManager:
+        def __enter__(self):
+            pass
+            
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            logging.getLogRecordFactory().context = old_context
+            
+    return ContextManager()
+
+# Decorator for request timing and error handling
+def timed_operation(operation_name: str, **labels):
+    """Decorator to time operations and log metrics"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            start_time = time.time()
+            status = 'success'
+            
+            try:
+                result = func(*args, **kwargs)
+                return result
+            except Exception as e:
+                status = 'error'
+                logger.error(f"{operation_name} failed", exc_info=True, 
+                           extra={'error': str(e), 'error_type': e.__class__.__name__})
+                raise
+            finally:
+                duration = time.time() - start_time
+                metrics.record_latency(
+                    f"{operation_name}_duration_seconds", 
+                    duration,
+                    {**labels, 'status': status}
+                )
+                metrics.increment_counter(
+                    f"{operation_name}_total",
+                    {**labels, 'status': status}
+                )
+                logger.info(
+                    f"{operation_name} completed",
+                    extra={
+                        'operation': operation_name,
+                        'duration_seconds': duration,
+                        'status': status
+                    }
+                )
+        return wrapper
+    return decorator
 
 # Attempt to import CAMS client from the specified path
 try:
@@ -37,8 +160,7 @@ except ImportError:
             }
         return None
 
-# Configure basic logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Logging is now configured above with JSON formatter
 
 # --- HTTP Response Helper ---
 def create_json_response(data, status_code):
@@ -50,12 +172,29 @@ def create_json_response(data, status_code):
 
 # --- CAMS Client Stub ---
 class CAMSClient:
+    @timed_operation("cams_lookup", operation="get_agent_mapping")
     def get_agent_mapping(self, ai_agent_address: str):
         """
         Wrapper for the CAMS getAgentMapping function.
         """
-        logging.info(f"CAMSClient: Looking up agent mapping for {ai_agent_address}")
-        return getAgentMapping(ai_agent_address)
+        with log_context(ai_agent_address=ai_agent_address):
+            logger.info("Looking up agent mapping")
+            try:
+                result = getAgentMapping(ai_agent_address)
+                if result:
+                    logger.debug("Agent mapping found", extra={
+                        'status': result.get('status', 'UNKNOWN'),
+                        'inbox_name': result.get('inboxName')
+                    })
+                else:
+                    logger.warning("Agent mapping not found")
+                return result
+            except Exception as e:
+                logger.error("Failed to get agent mapping", extra={
+                    'error': str(e),
+                    'error_type': e.__class__.__name__
+                })
+                raise
 
 cams_client = CAMSClient()
 
@@ -69,6 +208,7 @@ class PubSubPublisher:
         logging.info(f"PubSubPublisher: Initialized for project {project_id} (STUB)")
         self.simulate_failure = False # For testing error handling
 
+    @timed_operation("pubsub_publish", operation="publish_message")
     def publish_message(self, topic_name: str, message_data: dict):
         """
         Publishes a message to the specified Pub/Sub topic.
@@ -76,18 +216,63 @@ class PubSubPublisher:
         `topic_name` here is the full topic path like "projects/your-project/topics/your-topic"
         `message_data` is the dictionary conforming to Pub/Sub message structure {"data": "...", "attributes": {...}}
         """
-        if self.simulate_failure:
-            logging.error(f"PubSubPublisher: SIMULATED FAILURE publishing to {topic_name}")
-            raise Exception("Simulated Pub/Sub publishing error")
+        message_id = str(uuid.uuid4())
+        attributes = message_data.get('attributes', {})
+        
+        log_context_data = {
+            'topic_name': topic_name,
+            'message_id': message_id,
+            'message_size': len(str(message_data.get('data', ''))),
+            'ai_agent_address': attributes.get('aiAgentAddress')
+        }
+        
+        with log_context(**log_context_data):
+            logger.info("Publishing message to Pub/Sub")
+            
+            if self.simulate_failure:
+                error_msg = f"SIMULATED FAILURE publishing to {topic_name}"
+                logger.error(error_msg)
+                metrics.increment_counter(
+                    "pubsub_publish_errors_total",
+                    {
+                        'topic_name': topic_name,
+                        'error_type': 'simulated_failure',
+                        'ai_agent_address': attributes.get('aiAgentAddress')
+                    }
+                )
+                raise Exception(error_msg)
 
-        # In a real implementation:
-        # data_bytes = message_data['data'].encode('utf-8') # Assuming data is already base64 string, Pub/Sub client handles this
-        # attributes = message_data['attributes']
-        # future = self.publisher_client.publish(topic_name, data=data_bytes, **attributes)
-        # future.result() # Wait for publish to complete (or handle asynchronously)
-
-        logging.info(f"PubSubPublisher: STUBBED Publishing message to topic '{topic_name}'. Message attributes: {message_data.get('attributes')}")
-        return True # Simulate success
+            try:
+                # In a real implementation:
+                # data_bytes = message_data['data'].encode('utf-8')
+                # attributes = message_data['attributes']
+                # future = self.publisher_client.publish(topic_name, data=data_bytes, **attributes)
+                # message_id = future.result()  # Wait for publish to complete
+                
+                logger.info("Message published successfully")
+                metrics.increment_counter(
+                    "pubsub_published_messages_total",
+                    {
+                        'topic_name': topic_name,
+                        'ai_agent_address': attributes.get('aiAgentAddress')
+                    }
+                )
+                return message_id
+                
+            except Exception as e:
+                logger.error("Failed to publish message", extra={
+                    'error': str(e),
+                    'error_type': e.__class__.__name__
+                })
+                metrics.increment_counter(
+                    "pubsub_publish_errors_total",
+                    {
+                        'topic_name': topic_name,
+                        'error_type': e.__class__.__name__,
+                        'ai_agent_address': attributes.get('aiAgentAddress')
+                    }
+                )
+                raise
 
 # Initialize a conceptual Pub/Sub publisher
 # In a real app, project_id would come from config

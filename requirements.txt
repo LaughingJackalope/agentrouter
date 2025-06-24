@@ -1,0 +1,29 @@
+# Core dependencies
+Flask==2.3.3
+Werkzeug==2.3.7
+python-dotenv==1.0.0
+requests==2.31.0
+PyYAML==6.0.1
+
+# Google Cloud
+google-cloud-pubsub==2.19.0
+google-cloud-storage==2.12.0
+
+# Database
+psycopg2-binary==2.9.9
+SQLAlchemy==2.0.23
+
+# Testing
+pytest==7.4.3
+pytest-cov==4.1.0
+
+# Logging
+python-json-logger==2.0.7
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2023.3.post1
+
+# API
+gunicorn==21.2.0
+gevent==23.7.0

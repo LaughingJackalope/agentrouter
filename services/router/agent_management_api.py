@@ -3,6 +3,11 @@
 
 from flask import Flask, request, jsonify
 import datetime
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --- Conceptual CAMS Client ---
 # This is a placeholder for the actual CAMS client.
@@ -108,6 +113,10 @@ cams_client = CAMSClientPseudo()
 
 # Initialize Flask app (conceptual, not running a server here)
 app = Flask(__name__)
+
+# Import health check routes and metrics
+from agent_health_check_api import register_health_check_routes
+from message_router_service import MetricsCollector
 
 # --- API Endpoints ---
 # Base path: /v1/agent-inboxes
@@ -224,13 +233,18 @@ def delete_agent_mapping_handler(aiAgentAddress): # Renamed to avoid conflict wi
         # if getAgentMapping found it but delete failed.
         return jsonify({"error": f"Failed to delete agent mapping for {aiAgentAddress}. It might have been deleted already or an internal error occurred."}), 500
 
+# Initialize metrics collector
+metrics = MetricsCollector()
+
+# Register health check routes with metrics
+register_health_check_routes(app, cams_client, metrics)
+
 if __name__ == '__main__':
     # This is for conceptual testing if one were to run this file directly.
     # In a real scenario, this would be run by a WSGI server like Gunicorn.
 
-    # Example Usage (Conceptual - requires running a Flask dev server)
-    # To test:
-    # 1. Run this file: python agent_management_api.py
+    # Register routes (in a real app, this would be in a separate app.py or similar)
+    app.run(debug=True, host='0.0.0.0', port=5000)   # 1. Run this file: python agent_management_api.py
     # 2. Use curl or Postman to send requests, e.g.:
     #    curl -X POST -H "Content-Type: application/json" -d '{"aiAgentAddress":"test@example.com", "inboxDestinationType":"GCP_PUBSUB_TOPIC", "inboxName":"test-topic"}' http://127.0.0.1:5000/v1/agent-inboxes
     #    curl http://127.0.0.1:5000/v1/agent-inboxes/test@example.com

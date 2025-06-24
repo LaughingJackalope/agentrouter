@@ -1,4 +1,13 @@
-# Agent Management API (/v1/agent-inboxes)
+# Router Service APIs
+
+This document describes the RESTful APIs provided by the Router Service.
+
+## Table of Contents
+
+1. [Agent Management API](#agent-management-api-v1agent-inboxes)
+2. [Agent Health Check API](#agent-health-check-api-v1agent-health-check)
+
+## Agent Management API (/v1/agent-inboxes)
 
 This document describes the RESTful APIs for managing AI Agent addresses and their associated mappings within the Central Agent Mapping Service (CAMS). These APIs are exposed under the base path `/v1/agent-inboxes`.
 
@@ -99,14 +108,43 @@ The API handlers are implemented in `agent_management_api.py` and interact with 
 ### 4. Delete Agent Mapping (Delete)
 
 *   **Endpoint:** `DELETE /v1/agent-inboxes/{aiAgentAddress}`
-*   **Purpose:** Deletes an AI Agent mapping record.
-*   **Path Parameter:** `{aiAgentAddress}`
+*   **Purpose:** Deletes an existing AI Agent mapping. In practice, this would likely be a soft delete (marking as INACTIVE) rather than a hard delete.
+*   **Path Parameter:** `{aiAgentAddress}` (e.g., `agent-to-delete@yourorg.com`)
 *   **Successful Response:**
     *   **HTTP Status:** `204 No Content`
+    *   **Response Body:** Empty.
 *   **Error Handling:**
-    *   `400 Bad Request`: If `aiAgentAddress` path parameter is missing or invalid.
     *   `404 Not Found`: If `aiAgentAddress` does not exist.
     *   `500 Internal Server Error`: For unexpected errors during deletion.
+
+## Agent Health Check API (/v1/agent-health-check)
+
+The Agent Health Check API allows AI Agents to report their health status, which is used to update their status in the Central Agent Mapping Service (CAMS).
+
+### Report Agent Health Status
+
+*   **Endpoint:** `POST /v1/agent-health-check`
+*   **Purpose:** Reports the current health status of an AI Agent.
+*   **Request Payload (JSON):**
+    ```json
+    {
+      "aiAgentAddress": "string",  // REQUIRED. The address of the reporting agent.
+      "status": "string",         // REQUIRED. Must be either "HEALTHY" or "UNHEALTHY"
+      "details": "string"          // OPTIONAL. Additional details about the health status.
+    }
+    ```
+*   **Successful Response:**
+    *   **HTTP Status:** `200 OK`
+    *   **Response Body (JSON):**
+        ```json
+        {
+          "message": "Health status updated successfully"
+        }
+        ```
+*   **Error Handling:**
+    *   `400 Bad Request`: For invalid input (missing required fields, invalid status value, etc.)
+    *   `404 Not Found`: If the specified agent address is not registered in CAMS.
+    *   `500 Internal Server Error`: For unexpected errors during processing.
 
 ## Interaction with CAMS Client
 
@@ -119,6 +157,23 @@ The API handlers in `agent_management_api.py` use a conceptual `cams_client` to 
 *   The CAMS client also has older specific update functions like `updateAgentStatus` and `updateAgentInbox`, but the `PUT` endpoint for agent management now uses the more generic `updateAgentMappingDetails`.
 
 Errors from the CAMS client (e.g., agent not found, duplicate agent, invalid input for updates) are mapped to appropriate HTTP status codes by the API handlers. The `updatedBy` field in CAMS records is generally set by the CAMS client or the API handler (e.g., "router_service/PUT").
+
+## Notes
+
+*   **Authentication & Authorization:** These endpoints would typically be secured (e.g., using API keys, OAuth 2.0, or IAM) to ensure only authorized services can manage agent mappings and report health status.
+*   **Error Responses:** All error responses include a JSON body with an `error` field containing a descriptive message.
+*   **Timestamps:** All timestamps are in ISO 8601 format with UTC timezone (e.g., `2025-06-24T10:00:00.000Z`).
+*   **Status Values:** The `status` field typically uses `ACTIVE` or `INACTIVE` for agent status, while health checks use `HEALTHY` or `UNHEALTHY`.
+
+## Implementation Notes
+
+*   The API is designed to be RESTful and follows standard HTTP methods and status codes.
+*   The implementation uses a conceptual `cams_client` to interact with the Central Agent Mapping Service.
+*   Error handling includes input validation and proper error responses.
+*   The API is designed to be extensible for future enhancements.
+*   Health checks are logged and can be monitored for operational insights.
+
+For more detailed information about the health check API, see [Health Check Guide](./health_check_guide.md).
 
 ---
 This README describes the Agent Management APIs. For details on the Message Ingestion API (`POST /v1/messages`), please refer to `message_router_service_README.md`.
